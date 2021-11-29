@@ -17,3 +17,5 @@ LazyData: true
 RoxygenNote: 7.1.2
 Imports: 
     magrittr
+URL: https://github.com/matthewlewis896/litreadr
+BugReports: https://github.com/matthewlewis896/litreadr/issues
