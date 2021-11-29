@@ -87,66 +87,135 @@ assemble_pdf_text <-
         )
     )
 
-    # get rid of rows which are just pipes
-    x <-
-      x %>%
-      lapply(
-        function(xx){
-          xx <-
-            xx %>%
-            dplyr::filter(
-              text != "|"
-            )
-        }
-      )
+    ## get rid of rows which are just pipes
+    # x <-
+    #   x %>%
+    #   lapply(
+    #     function(xx){
+    #       xx <-
+    #         xx %>%
+    #         dplyr::filter(
+    #           text != "|"
+    #         )
+    #     }
+    #   )
 
 
     # for each sheet of the pdf
     x2 <- list()
     for(i in 1:length(x)){
       tmp <-
-        x[[1]]
+        x[[1]] %>%
+        # add height range to capture sub- and super-script characters
+        dplyr::mutate(
+          ymin = y + height -1, # assuming y gives coordinate of top of text box in px from top.
+          #-1 for rogue overlaps
+          xmax = x +width,
+          row = NA
+        ) %>%
+        dplyr::rename(
+          ymax = y,
+          xmin = x
+        ) %>%
+        dplyr::relocate(
+          ymin, .before = ymax,
+        ) %>%
+        dplyr::relocate(
+          xmax, .after = xmin
+        )
+
+      # add grouping
+      row_num <- 1
+      tmp$row[1] <- row_num
+      for(j in 2:nrow(tmp)){
+        if(
+          # not superscript
+          !(tmp$ymin[j] < tmp$ymax[j-1])  &
+          # not subscript
+          !(tmp$ymax[j] < tmp$ymin[j-1])
+          ){
+          row_num <- row_num +1
+        }
+        tmp$row[j] <- row_num
+      }
+      tmp <-
+        tmp %>%
+        dplyr::arrange(
+          row, xmin
+        )
+
       x2[[i]] <- tmp[0,]
 
       # for each row
-      for(j in 1:length(unique(tmp$y))){
+      for(j in unique(tmp$row)){
         tmp2 <-
           tmp %>%
-          dplyr::filter(y == unique(tmp$y)[j])
+          dplyr::filter(row == j) %>%
+          dplyr::mutate(
+            group = NA
+          )
 
         cut_breaks <-
-          which(tmp2$space == F)
-        for(k in 1:length(cut_breaks)){
-          if(k==1){
-            1:cut_breaks[k]
+          data.frame(
+            breaks = which(tmp2$space == F),
+            join = NA
+          )
+
+        # check whether these cut breaks should join to previous or next based on x gap
+        for(k in 1:nrow(cut_breaks)){
+          # if very first item then must attach to  next
+          if(cut_breaks$breaks[k] == 1){
+            cut_breaks$join[k] <- 1
+          }else if(k == nrow(cut_breaks)){
+            # if last item then much attach to previous
+            cut_breaks$join[k] <- -1
           }else{
-            (cut_breaks[k-1]+1):cut_breaks[k]
+            gap_prev <-
+              tmp2$xmin[cut_breaks$breaks[k]]-
+              tmp2$xmax[cut_breaks$breaks[k]-1]
+            gap_next <-
+              tmp2$xmin[cut_breaks$breaks[k]+1] -
+              tmp2$xmax[cut_breaks$breaks[k]]
+            cut_breaks$join[k] <-
+              ifelse(
+                gap_prev > gap_next,
+                1,
+                -1
+              )
+          }
+        }
+        cut_breaks2 <- list()
+        for(k in 1:(nrow(cut_breaks)-1)){
+          if(cut_breaks$join[k] == 1){
+            cut_breaks2 <-
+              cut_breaks2 %>%
+              rlist::list.append(
+                c(
+                  # start
+                  ifelse(
+                    k==1,
+                    1,
+                    ifelse(
+                      cut_breaks$join[k-1] == -1,
+                      cut_breaks$breaks[k-1]+1,
+                      cut_breaks$breaks[k]
+                    )
+                  ):
+                  #end
+                  ifelse(
+                    cut_breaks$join[k+1] == 1,
+                    cut_breaks$breaks[k+1]-1,
+                    cut_breaks$breaks[k+1]
+                  )
+                )
+              )
           }
         }
 
-          cut(
-            1:nrow(tmp2),
-            breaks =
-              ifelse(1 %in% ,
-                     list(which(tmp2$space == F)),
-                     list(1, which(tmp2$space == F))) %>%
-              unlist(),
-            right =
-              ifelse(
-                1 %in% which(tmp2$space == F),
-                F, T),
-            include.lowest = T,
-            labels = F
-          )
-          # group based on whether followed by a space - if not then end of section
-          dplyr::mutate(
-            group =
-              ifelse(
-                nrow(.[.$space == F,]) > 1L,
-                ,
-                1
-              )
-          )
+        # group
+        for(k in 1:length(cut_breaks2)){
+          tmp2$group[unlist(cut_breaks2[[k]])] <- k
+        }
 
         for(k in 1:length(unique(tmp2$group))){
           tmp3 <-
