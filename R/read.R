@@ -1,6 +1,6 @@
 #' Read \code{.pdf} files into R
 #'
-#' @description Reads \code{.pdf} files into R as text and does basic formatting including splitting paragraphs
+#' @description Reads \code{.pdf} files into R as text and splits into sections.
 #' @param x \code{character}. File path to the \code{.pdf} file.
 #' @return A \code{list} object.
 #' @author Matt Lewis
@@ -15,7 +15,13 @@ read_pdf <-
     # read in
     pdf_tab <-
       x %>%
-      pdftools::pdf_data(font_info = T)
+      read_pdf(
+        x = pdftools::pdf_data(., font_info = T),
+        size = pdftools::pdf_pagesize(.)
+      )
+
+
+    ## Beyond here is partly completed
 
     # check number of characters between each word
     pdf_text_tab <-

@@ -61,185 +61,33 @@ count_spaces <-
 }
 
 
-#' Assemble pdf data into text sections
+#' Estimate space width
 #'
-#' @description For data read in by \code{pdftools::pdf_data()}, assemble into text sections based on x and y
-#' positioning, height and width.
-#' @param x A \code{list} of \code{data.frames} as read by \code{pdftools::pdf_data()}.
-#' @return A \code{list}.
+#' @description Estimate width of a space in a given font.
+#' @param x A \code{data.frame} or \code{tibble} passed by \code{split_pdf_text()}.
+#' @return A \code{data.frame} with a column for average space width added.
 #' @author Matt Lewis
 #' @keywords internal
-assemble_pdf_text <-
+estimate_space_width <-
   function(x){
-    # Check inputs
     assertthat::assert_that(
-      is.list(x),
-      is.data.frame(x[[1]])
-      )
-    assertthat::assert_that(
-      all(names(x[[1]]) == c("width", "height", "x", "y", "space", "text", "font_name", "font_size")),
-      msg =
-        paste0(
-          '`x` is not in the right format.\n',
-          'Expected column names: width, height, x, y, space, text, font_name, font_size\n',
-          'Actual column names: ',
-          paste(names(x[[1]]), collapse = ", ")
-        )
+      is.data.frame(x),
+      all(c("font_name", "font_size", "width", "height") %in% names(x))
     )
 
-    ## get rid of rows which are just pipes
-    # x <-
-    #   x %>%
-    #   lapply(
-    #     function(xx){
-    #       xx <-
-    #         xx %>%
-    #         dplyr::filter(
-    #           text != "|"
-    #         )
-    #     }
-    #   )
+    x <-
+      x %>%
+      dplyr::group_by(font_name, font_size) %>%
+      dplyr::mutate(
+        # get ratio of text width to pdf width to width of text rendering in figure window
+        text_ratio = mean(rel_width / graphics::strwidth(text, "figure")),
+        # use this to work out what a space would correspond to
+        space_rel_width =
+          graphics::strwidth(" ", "figure") *text_ratio,
 
+        space_width = ceiling(space_rel_width*(width/rel_width))
+      ) %>%
+      dplyr::ungroup()
 
-    # for each sheet of the pdf
-    x2 <- list()
-    for(i in 1:length(x)){
-      tmp <-
-        x[[1]] %>%
-        # add height range to capture sub- and super-script characters
-        dplyr::mutate(
-          ymin = y + height -1, # assuming y gives coordinate of top of text box in px from top.
-          #-1 for rogue overlaps
-          xmax = x +width,
-          row = NA
-        ) %>%
-        dplyr::rename(
-          ymax = y,
-          xmin = x
-        ) %>%
-        dplyr::relocate(
-          ymin, .before = ymax,
-        ) %>%
-        dplyr::relocate(
-          xmax, .after = xmin
-        )
-
-      # add grouping
-      row_num <- 1
-      tmp$row[1] <- row_num
-      for(j in 2:nrow(tmp)){
-        if(
-          # not superscript
-          !(tmp$ymin[j] < tmp$ymax[j-1])  &
-          # not subscript
-          !(tmp$ymax[j] < tmp$ymin[j-1])
-          ){
-          row_num <- row_num +1
-        }
-        tmp$row[j] <- row_num
-      }
-      tmp <-
-        tmp %>%
-        dplyr::arrange(
-          row, xmin
-        )
-
-      x2[[i]] <- tmp[0,]
-
-      # for each row
-      for(j in unique(tmp$row)){
-        tmp2 <-
-          tmp %>%
-          dplyr::filter(row == j) %>%
-          dplyr::mutate(
-            group = NA
-          )
-
-        cut_breaks <-
-          data.frame(
-            breaks = which(tmp2$space == F),
-            join = NA
-          )
-
-        # check whether these cut breaks should join to previous or next based on x gap
-        for(k in 1:nrow(cut_breaks)){
-          # if very first item then must attach to  next
-          if(cut_breaks$breaks[k] == 1){
-            cut_breaks$join[k] <- 1
-          }else if(k == nrow(cut_breaks)){
-            # if last item then much attach to previous
-            cut_breaks$join[k] <- -1
-          }else{
-            gap_prev <-
-              tmp2$xmin[cut_breaks$breaks[k]]-
-              tmp2$xmax[cut_breaks$breaks[k]-1]
-            gap_next <-
-              tmp2$xmin[cut_breaks$breaks[k]+1] -
-              tmp2$xmax[cut_breaks$breaks[k]]
-            cut_breaks$join[k] <-
-              ifelse(
-                gap_prev > gap_next,
-                1,
-                -1
-              )
-          }
-        }
-        cut_breaks2 <- list()
-        for(k in 1:(nrow(cut_breaks)-1)){
-          if(cut_breaks$join[k] == 1){
-            cut_breaks2 <-
-              cut_breaks2 %>%
-              rlist::list.append(
-                c(
-                  # start
-                  ifelse(
-                    k==1,
-                    1,
-                    ifelse(
-                      cut_breaks$join[k-1] == -1,
-                      cut_breaks$breaks[k-1]+1,
-                      cut_breaks$breaks[k]
-                    )
-                  ):
-                  #end
-                  ifelse(
-                    cut_breaks$join[k+1] == 1,
-                    cut_breaks$breaks[k+1]-1,
-                    cut_breaks$breaks[k+1]
-                  )
-                )
-              )
-          }
-        }
-
-        # group
-        for(k in 1:length(cut_breaks2)){
-          tmp2$group[unlist(cut_breaks2[[k]])] <- k
-        }
-
-        for(k in 1:length(unique(tmp2$group))){
-          tmp3 <-
-            tmp2 %>%
-            dplyr::filter(group == unique(group)[k])
-
-          tmp3$text[1]<-
-            tmp3 %>%
-            dplyr::pull(text) %>%
-            paste(collapse = " ")
-
-          tmp3 <-
-            tmp3 %>%
-            dplyr::mutate(
-              width = NA,
-              space = F
-            ) %>%
-            dplyr::select(-group) %>%
-            dplyr::slice(1)
-
-          x2[[i]] <-
-            rbind(x2[[i]], tmp3)
-        }
-      }
-
-    }
+    return(x)
   }
