@@ -13,7 +13,7 @@ read_pdf(x)
 A \code{list} object.
 }
 \description{
-Reads \code{.pdf} files into R as text and does basic formatting including splitting paragraphs
+Reads \code{.pdf} files into R as text and splits into sections.
 }
 \author{
 Matt Lewis

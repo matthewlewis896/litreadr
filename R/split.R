@@ -26,20 +26,6 @@ split_pdf_text <-
         )
     )
 
-    ## get rid of rows which are just pipes
-    # x <-
-    #   x %>%
-    #   lapply(
-    #     function(xx){
-    #       xx <-
-    #         xx %>%
-    #         dplyr::filter(
-    #           text != "|"
-    #         )
-    #     }
-    #   )
-
-
     # for each sheet of the pdf
     x2 <- list()
     for(i in 1:length(x)){
@@ -63,7 +49,9 @@ split_pdf_text <-
         dplyr::relocate(rel_width, .after = width) %>%
         dplyr::relocate(rel_height, .after = height) %>%
         estimate_space_width() %>%
-        dplyr::relocate(row, .after = dplyr::last_col())
+        dplyr::relocate(row, .after = dplyr::last_col()) %>%
+        # get rid of space column because it's actually not useful
+        dplyr::select(-space)
 
       # add grouping
       row_num <- 1
@@ -103,6 +91,16 @@ split_pdf_text <-
                   T
                 )
               ),
+            new_font_size =
+              ifelse(
+                dplyr::row_number()==1,
+                T,
+                ifelse(
+                  font_size == dplyr::lag(font_size),
+                  F,
+                  T
+                )
+              ),
             space_gap =
               ifelse(
                 dplyr::row_number() == 1,
@@ -122,105 +120,143 @@ split_pdf_text <-
                 # if new font then must be a new group
                 tmp2$new_font[k] == T,
                 tmp2$group[k-1]+1,
-                # if not
+                #if not
                 ifelse(
-                  # if space gap exceeds estimated space size then make a new group
-                  tmp2$space_gap[k] > tmp2$space_width[k-1],
+                  # if new font size then new group
+                  tmp2$new_font_size[k] == T,
                   tmp2$group[k-1]+1,
-                  # otherwise same group
-                  tmp2$group[k-1]
+                  # if not
+                  ifelse(
+                    # if space gap >2x estimated space size then make a new group
+                    tmp2$space_gap[k] > (2*tmp2$space_width[k-1]),
+                    tmp2$group[k-1]+1,
+                    # otherwise same group
+                    tmp2$group[k-1]
+                  )
                 )
-
               )
             )
         }
-        ## find how to split data
-        # infer split based on font groupings
-        cut_breaks <-
-          data.frame(
-            breaks = which(tmp2$space == F),
-            join = NA
-          )
 
-        # check whether these cut breaks should join to previous or next based on x gap
-        for(k in 1:nrow(cut_breaks)){
-          # if very first item then must attach to  next
-          if(cut_breaks$breaks[k] == 1){
-            cut_breaks$join[k] <- 1
-          }else if(k == nrow(cut_breaks)){
-            # if last item then much attach to previous
-            cut_breaks$join[k] <- -1
-          }else{
-            gap_prev <-
-              tmp2$xmin[cut_breaks$breaks[k]]-
-              tmp2$xmax[cut_breaks$breaks[k]-1]
-            gap_next <-
-              tmp2$xmin[cut_breaks$breaks[k]+1] -
-              tmp2$xmax[cut_breaks$breaks[k]]
-            cut_breaks$join[k] <-
-              ifelse(
-                gap_prev > gap_next,
-                1,
-                -1
+        tmp2 <-
+          tmp2 %>%
+          # get rid of rows which are just pipes
+          dplyr::filter(
+            text != "|"
+          ) %>%
+          # get rid of space gap column and new font columns now not needed
+          dplyr::select(-space_gap, -new_font, -new_font_size)
+
+        tmp3 <-
+          tmp2 %>%
+          dplyr::group_by(group) %>%
+          dplyr::mutate(
+            xmin = min(xmin),
+            xmax = max(xmax),
+            width = xmax - xmin,
+            rel_width = width / size$width[i],
+            ymin = min(ymin),
+            ymax = max(ymax),
+            height = ymin - ymax,
+            rel_height = height / size$height[i],
+            text = paste(text, collapse = " ")
+          ) %>%
+          dplyr::distinct() %>%
+          dplyr::ungroup() %>%
+          dplyr::select(-group)
+
+        x2[[i]] <-
+          rbind(x2[[i]], tmp3)
+      }
+      ## Identify cross-row grouping
+      # first change the way we record row
+      x2[[i]] <-
+        x2[[i]] %>%
+        dplyr::mutate(
+          row_start = row, row_end = row
+        ) %>%
+        dplyr::select(-row)
+      for(j in unique(x2[[i]]$row_start)){
+        if(j ==1){
+          next()
+        }else{
+          tmp <-
+            x2[[i]] %>%
+            dplyr::filter(row_start == j)
+          tmp_prev <-
+            x2[[i]] %>%
+            dplyr::filter(row_end == j-1)
+          for(k in 1:nrow(tmp)){
+            tmp_match <-
+              tmp_prev %>%
+              dplyr::filter(
+                # exact match of font name and font size
+                font_name == tmp$font_name[k],
+                font_size == tmp$font_size[k],
+                # exact match of xmin OR
+                # match within +2 spaces if bulleted
+                # putting minimum character cut off of 2 so as to not match
+                # to just numbers or just `2.`
+                xmin == tmp$xmin[k] |
+                  ((tmp$xmin[k] < (xmin + 2* space_width)) &
+                   tmp$xmin[k] > xmin &
+                   grepl("[0-9]",strsplit(text, 1, 1)) &
+                   nchar(text) >2L),
+                # check that xmax !> previous (within a space)
+                # as this would not suggest col layout
+                (xmax+space_width) >= tmp$xmax[k]
               )
-          }
-        }
-        cut_breaks2 <- list()
-        for(k in 1:(nrow(cut_breaks)-1)){
-          if(cut_breaks$join[k] == 1){
-            cut_breaks2 <-
-              cut_breaks2 %>%
-              rlist::list.append(
-                c(
-                  # start
-                  ifelse(
-                    k==1,
-                    1,
+            # see if we match
+            if(nrow(tmp_match) > 0L){
+              new_tmp <-
+                tmp_match %>%
+                rbind(tmp[k,]) %>%
+                dplyr::mutate(
+                  dplyr::across(
+                    .cols = c("width", "rel_width",
+                              "xmax", "ymin", "row_end"),
+                    .fns = max
+                  ),
+                  dplyr::across(
+                    .cols = c("height", "rel_height"),
+                    .fns = sum
+                  ),
+                  dplyr::across(
+                    .cols = c("ymax", "row_start"),
+                    .fns = min
+                  ),
+                  text =
                     ifelse(
-                      cut_breaks$join[k-1] == -1,
-                      cut_breaks$breaks[k-1]+1,
-                      cut_breaks$breaks[k]
+                      # see if we end with a hyphon and cut it
+                      substr(tmp_match$text,
+                             nchar(tmp_match$text),
+                             nchar(tmp_match$text)
+                             )!= "-",
+                      paste(text, collapse = " "),
+                      paste0(
+                        substr(tmp_match$text,
+                               1,
+                               nchar(tmp_match$text)
+                        ),
+                        tmp$text[k]
+                      )
                     )
-                  ):
-                    #end
-                    ifelse(
-                      cut_breaks$join[k+1] == 1,
-                      cut_breaks$breaks[k+1]-1,
-                      cut_breaks$breaks[k+1]
-                    )
-                )
-              )
+                  ) %>%
+                dplyr::distinct()
+
+              x2[[i]] <-
+                x2[[i]] %>%
+                rbind(new_tmp) %>%
+                # remove old rows
+                dplyr::anti_join(tmp_match) %>%
+                dplyr::anti_join(tmp[k,]) %>%
+                suppressMessages()
+            }
           }
-        }
-
-        # group
-        for(k in 1:length(cut_breaks2)){
-          tmp2$group[unlist(cut_breaks2[[k]])] <- k
-        }
-
-        for(k in 1:length(unique(tmp2$group))){
-          tmp3 <-
-            tmp2 %>%
-            dplyr::filter(group == unique(group)[k])
-
-          tmp3$text[1]<-
-            tmp3 %>%
-            dplyr::pull(text) %>%
-            paste(collapse = " ")
-
-          tmp3 <-
-            tmp3 %>%
-            dplyr::mutate(
-              width = NA,
-              space = F
-            ) %>%
-            dplyr::select(-group) %>%
-            dplyr::slice(1)
-
-          x2[[i]] <-
-            rbind(x2[[i]], tmp3)
         }
       }
-
+      x2[[i]] <-
+        x2[[i]] %>%
+        dplyr::arrange(row_start, xmin)
     }
   }

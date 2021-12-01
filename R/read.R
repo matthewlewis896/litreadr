@@ -15,7 +15,7 @@ read_pdf <-
     # read in
     pdf_tab <-
       x %>%
-      read_pdf(
+      split_pdf_text(
         x = pdftools::pdf_data(., font_info = T),
         size = pdftools::pdf_pagesize(.)
       )
